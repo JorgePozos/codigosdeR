@@ -1,0 +1,187 @@
+---
+title: "**Ajuste de Curvas de Probabilidad en R para el Evento de Incendio Forestal de Acuerdo con la Información del Atlas Nacional de Riesgos.**"
+author: "Jorge Uriel Barragan Pozos"
+date: "08/09/21"
+
+output:
+  pdf_document: default
+---
+
+\titlepage 
+
+# Actualice los montos de pérdida para valuar todos en el año 2015 considerando incrementos anuales de la inflación. 
+
+## 1)Cargamos las librerías que vamos a necesitar 
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+library(knitr)
+library(dplyr) #Manipulación de Dataframes
+library(readxl) #Importar Datos de Excel
+library(MASS) #Distribucion de Probabilidad
+library(actuar) #Distribuciones Adicionales
+library(fitdistrplus) #Ajuste de Curvas de Probabilidad
+library(goftest) #Pruebas de Bondad de Ajuste 
+library(ggplot2) #Gráficas
+```
+
+## 2)Importamos los datos de año y costo del siniestro y las tasa de interes anuales entre el año 2000 y 2015
+
+Encontramos los datos de la tasa de inflación anual en la sig. página de internet: 
+[*https://www.proyectosmexico.gob.mx/por-que-invertir-en-mexico/economia-solida/politica-monetaria/sd_tasas-de-inflacion-historicas/*](https://www.proyectosmexico.gob.mx/por-que-invertir-en-mexico/economia-solida/politica-monetaria/sd_tasas-de-inflacion-historicas/) 
+y, en excel, creamos una nueva columna "factor_ajuste" que es el producto de (1 + i) donde i es la tasa de inflación de los periodos que queremor llevar al 2015.
+
+```{r}
+#Importamos los datos de año y costo del siniestro
+incendios <- read_excel("AP Ajuste de Curvas de Probabilidad - Atlas de Riesgos.xlsx", 
+                        sheet = "IF")
+#Importamos una tabla con los datos de la tasa de interés anual 
+inflacion <- read_excel("INFLACION.xlsx")%>%
+#nos quedamos con la información entre 2000 y 2015
+  filter(Año >= 2000 & Año <= 2015)
+```
+
+\newpage
+
+## 3)Obervamos las tablas importadas
+
+```{r tables}
+#Tabla de incendios contiene 464 onservaciones de siniestros con los datos de  año y costo.
+#Resumen de los Datos de  Incendios Forestales
+kable(
+  top_n(incendios, 20)#Mostramos las primeras 20 observaciones
+  )
+```
+
+```{r}
+#Tabla de Inflación contiene los datos de las tasas anuales en mexico
+#La columna factor_ajuste nos permiten llevar las cantidades a su valor en 2015
+kable(inflacion)
+#Juntamos la tablas de incendios e inflación en una sola tabla incendio_ajustado
+incendio_ajustado <- incendios%>%
+  inner_join(inflacion, by = "Año")%>%
+#También, creamos una nueva columna que es el costo valuado en 2015
+  mutate(costo_real = `Incendio Forestal (mdp)`*factor_ajuste)
+```
+
+**Obtenemos la siguiente tabla:**
+```{r}
+kable(top_n(incendio_ajustado,25)) #Mostramos las primeras 25 observaiones
+```
+\newpage
+
+# Análisis de Estadística Descriptiva de los Datos
+## 1)Veamos el histograma de los costos reales.
+```{r}
+ggplot(incendio_ajustado, aes(costo_real)) + geom_density(color = 'blue') +
+  geom_histogram(aes(y = ..density..),bins = 13)+ labs(title = "Distribución de Montos de Pérdida") + scale_x_log10()
+```
+\newpage
+```{r}
+#Función de Distribución
+plot(ecdf(incendio_ajustado$costo_real), main= "Función de Distribución")
+```
+
+## 2)Cambiaremos la escala de los datos
+Con el obejtivo de suavizar el histograma, creamos una columna nueva "logdata" que será [ln(costro_real) + 7], sumamos 7 unidades para recorrer el histograma a la derecha y tener valores mayores que 0 para poder ajustar las curvas de probabilidad.
+```{r}
+datos <- incendio_ajustado %>% 
+  mutate(logdata = log(costo_real) + 7)
+
+kable(top_n(datos, 8))#Primeros 8 obs. de tabla actualizada
+```
+
+\newpage
+
+## 3)Veamos el histograma en escala logaritmica recorrido 7 unidades
+```{r}
+#Datos Estadistica Descriptiva
+ est_des <- summary(datos$logdata)
+ggplot(datos, aes(logdata))  + geom_histogram(aes(y = ..density..), bins = 13)+   geom_density(alpha = 0.05 ,fill = "green") + 
+  labs(x= "Intervalos", title = "Densidad de Montos de Pérdida a Escala (mdp)")+
+  
+  geom_vline(aes(xintercept=  est_des[4] ),#Media
+            color="blue", linetype="dashed", size=1) + 
+  geom_vline(aes(xintercept=  est_des[2] ),#Primer Cuartil
+            color="red", linetype="dashed", size=1) + 
+  geom_vline(aes(xintercept=  est_des[3] ), #Mediana
+            color="red", linetype="dashed", size=1) + 
+  geom_vline(aes(xintercept=  est_des[5] ),#Tercer Cuartil
+            color="red", linetype="dashed", size=1)
+est_des  
+
+#Función de Distribución
+plot(ecdf(datos$logdata), main = "Función de Distribución a Escala")
+```
+
+\newpage
+
+# Ajuste de Curvas de Probabilidad
+```{r include=FALSE}
+help("fitdistrplus-package")
+mod1 <- fitdist(datos$logdata, "gamma", method = c("mle"))
+mod2 <- fitdist(datos$logdata, "weibull", method = "mle")
+mod3 <- fitdist(datos$logdata, "pareto", method = "mle", 
+                 start = list(shape = 1, scale =300))
+mod4 <- fitdist(datos$logdata, "lnorm", method = "mle")
+mod5 <- fitdist(datos$logdata, "norm", method = "mle")
+mod6 <- fitdist(datos$logdata, "llogis", method = "mle")
+mod7 <- fitdist(datos$logdata, "invgamma", method = "mle")
+mod8 <- fitdist(datos$logdata, "invweibull", method = "mle")
+
+```
+
+## Comparativo de Ajustes de Curvas de Probabilidad 
+```{r}
+leyenda <- c("Gamma", "Weibull", "Pareto", "Lognormal","Normal","loglogistica","Gamma Inversa","Weibull Inversa")
+```
+
+### a)Función de Densidad
+```{r}
+denscomp(list(mod1, mod2, mod3, mod4, mod5, mod6, mod7, mod8), legendtext = leyenda)
+```
+
+\newpage
+
+### b)Función de Distribución
+```{r}
+cdfcomp(list(mod1, mod2, mod3, mod4, mod5, mod6, mod7, mod8), legendtext = leyenda)  
+```
+
+\newpage
+
+### c)Cuantiles Teóricos vs Empiricos
+```{r}
+qqcomp(list(mod1, mod2, mod3, mod4, mod5, mod6, mod7, mod8), legendtext = leyenda, xlim = c(0,12))  
+```
+
+\newpage
+
+### d)Probabilidades Teóricas vs Empiricas
+```{r}
+ppcomp(list(mod1, mod2, mod3, mod4, mod5, mod6, mod7, mod8), legendtext = leyenda)  
+```
+
+\newpage
+
+# Pruebas de Bondad de Ajuste 
+```{r}
+gofstat(list(mod1, mod2, mod3, mod4, mod5, mod6, mod7, mod8))
+```
+
+
+# Conclusión 
+Con base en la información de las pruebas de bondad de ajuste, podemos ver que la distribución con el menor criterio de Akaike y Bayesiano es la distribución Weibull. Así concluimos que la distribución que mejor se ajusta a los datos es la distribución Weibull con parámetros: 
+```{r}
+
+par(mfrow = c(2,2))
+denscomp(mod2) # Función de Densidad
+cdfcomp(mod2) #Función de Distribución 
+qqcomp(mod2) #cuantiles Teóricos vs Empiricos 
+ppcomp(mod2) #Probabilidades Teóricas vs Empiricas 
+
+```
+
+
+
+
+
+
